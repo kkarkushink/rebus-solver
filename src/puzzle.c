@@ -98,77 +98,100 @@ static void mark_leading(const Puzzle *p, int is_leading[MAX_LETTERS])
  * ветка отбрасывается сразу на своём разряде, а не после полного назначения
  * всех букв ребуса. Это и есть главное алгоритмическое ускорение относительно
  * версий 1 и 2.
+ *
+ * Ниже - две машинно-независимые (не зависящие от конкретного процессора)
+ * микрооптимизации этого же алгоритма, не меняющие его асимптотику:
+ *  1) раскладка букв по разрядам (ColumnLayout) строится один раз перед
+ *     поиском, а не пересчитывается заново при каждом вызове solve_column -
+ *     во время перебора эта функция вызывается многократно для одного и
+ *     того же разряда (при откате на предыдущих разрядах), и повторное
+ *     сканирование слов было бы лишней работой;
+ *  2) множество использованных цифр хранится как битовая маска (1 слово
+ *     вместо массива из 10 элементов), проверка и установка - это одна
+ *     битовая операция вместо обращения к массиву по индексу.
  */
 
-/* Буква слова word_idx в разряде col (0 - младший разряд), если такой разряд
- * у слова есть; иначе функция возвращает 0, и слово в этом разряде не участвует. */
-static int column_letter(const Puzzle *p, int word_idx, int col, char *out_letter)
+typedef struct {
+    char addend_letter[MAX_WORDS]; /* буква слагаемого в этом разряде, 0 - разряда нет */
+    char result_letter;
+} ColumnLayout;
+
+static void build_columns(const Puzzle *p, ColumnLayout columns[MAX_WORD_LEN])
 {
-    int len = p->lengths[word_idx];
-    if (col >= len)
-        return 0;
-    *out_letter = p->words[word_idx][len - 1 - col];
-    return 1;
+    int col, i, len;
+
+    for (col = 0; col < p->result_len; col++) {
+        for (i = 0; i < p->n_addends; i++) {
+            len = p->lengths[i];
+            columns[col].addend_letter[i] = (char)((col < len) ? p->words[i][len - 1 - col] : 0);
+        }
+        columns[col].result_letter = p->words[p->n_addends][p->result_len - 1 - col];
+    }
 }
 
-static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], int used[10],
-                         const int is_leading[MAX_LETTERS], const Puzzle *p);
+static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], unsigned used,
+                         const int is_leading[MAX_LETTERS], const Puzzle *p,
+                         const ColumnLayout columns[MAX_WORD_LEN]);
 
 /* Все буквы разряда col уже получили цифры - проверяем равенство разряда
  * с учётом переноса и переходим к следующему разряду. */
-static int check_column(int col, int carry, int digit_of[MAX_LETTERS], int used[10],
-                         const int is_leading[MAX_LETTERS], const Puzzle *p)
+static int check_column(int col, int carry, int digit_of[MAX_LETTERS], unsigned used,
+                         const int is_leading[MAX_LETTERS], const Puzzle *p,
+                         const ColumnLayout columns[MAX_WORD_LEN])
 {
+    const ColumnLayout *cl = &columns[col];
     int sum = carry;
     int i;
-    char letter;
 
     for (i = 0; i < p->n_addends; i++)
-        if (column_letter(p, i, col, &letter))
-            sum += digit_of[letter - 'A'];
+        if (cl->addend_letter[i])
+            sum += digit_of[cl->addend_letter[i] - 'A'];
 
-    column_letter(p, p->n_addends, col, &letter); /* результат точно есть: col < result_len */
-    if (sum % 10 != digit_of[letter - 'A'])
+    if (sum % 10 != digit_of[cl->result_letter - 'A'])
         return 0;
 
-    return solve_column(col + 1, sum / 10, digit_of, used, is_leading, p);
+    return solve_column(col + 1, sum / 10, digit_of, used, is_leading, p, columns);
 }
 
 /* Поочерёдно назначает цифры новым буквам разряда col (new_letters[idx..n_new-1]),
  * а когда все они назначены - проверяет равенство разряда. */
 static int assign_column_letters(const char new_letters[MAX_LETTERS], int n_new, int idx,
-                                  int col, int carry, int digit_of[MAX_LETTERS], int used[10],
-                                  const int is_leading[MAX_LETTERS], const Puzzle *p)
+                                  int col, int carry, int digit_of[MAX_LETTERS], unsigned used,
+                                  const int is_leading[MAX_LETTERS], const Puzzle *p,
+                                  const ColumnLayout columns[MAX_WORD_LEN])
 {
     int d;
     char letter;
+    unsigned bit;
 
     if (idx == n_new)
-        return check_column(col, carry, digit_of, used, is_leading, p);
+        return check_column(col, carry, digit_of, used, is_leading, p, columns);
 
     letter = new_letters[idx];
     for (d = 0; d <= 9; d++) {
-        if (used[d])
+        bit = 1u << d;
+        if (used & bit)
             continue;
         if (d == 0 && is_leading[letter - 'A'])
             continue;
 
-        used[d] = 1;
         digit_of[letter - 'A'] = d;
 
-        if (assign_column_letters(new_letters, n_new, idx + 1, col, carry, digit_of, used, is_leading, p))
+        if (assign_column_letters(new_letters, n_new, idx + 1, col, carry, digit_of,
+                                   used | bit, is_leading, p, columns))
             return 1;
 
-        used[d] = 0;
         digit_of[letter - 'A'] = -1;
     }
     return 0;
 }
 
 /* Решение, начиная с разряда col (перенос carry из предыдущего разряда уже известен). */
-static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], int used[10],
-                         const int is_leading[MAX_LETTERS], const Puzzle *p)
+static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], unsigned used,
+                         const int is_leading[MAX_LETTERS], const Puzzle *p,
+                         const ColumnLayout columns[MAX_WORD_LEN])
 {
+    const ColumnLayout *cl;
     char new_letters[MAX_LETTERS];
     int n_new = 0;
     int i, k;
@@ -177,8 +200,10 @@ static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], int used[
     if (col == p->result_len)
         return carry == 0; /* все разряды обработаны - лишнего переноса не должно остаться */
 
+    cl = &columns[col];
     for (i = 0; i < p->n_addends; i++) {
-        if (!column_letter(p, i, col, &letter) || digit_of[letter - 'A'] != -1)
+        letter = cl->addend_letter[i];
+        if (!letter || digit_of[letter - 'A'] != -1)
             continue;
         for (k = 0; k < n_new && new_letters[k] != letter; k++)
             ;
@@ -186,7 +211,7 @@ static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], int used[
             new_letters[n_new++] = letter;
     }
 
-    column_letter(p, p->n_addends, col, &letter);
+    letter = cl->result_letter;
     if (digit_of[letter - 'A'] == -1) {
         for (k = 0; k < n_new && new_letters[k] != letter; k++)
             ;
@@ -194,15 +219,15 @@ static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], int used[
             new_letters[n_new++] = letter;
     }
 
-    return assign_column_letters(new_letters, n_new, 0, col, carry, digit_of, used, is_leading, p);
+    return assign_column_letters(new_letters, n_new, 0, col, carry, digit_of, used, is_leading, p, columns);
 }
 
 int solve_puzzle(const char *puzzle, char *result, size_t result_size)
 {
     Puzzle p;
+    ColumnLayout columns[MAX_WORD_LEN];
     int digit_of[MAX_LETTERS];
     int is_leading[MAX_LETTERS];
-    int used[10] = { 0 };
     int i;
 
     if (!parse_puzzle(puzzle, &p))
@@ -212,11 +237,12 @@ int solve_puzzle(const char *puzzle, char *result, size_t result_size)
         return 0; /* результат заведомо короче слагаемых - решения не существует */
 
     mark_leading(&p, is_leading);
+    build_columns(&p, columns);
 
     for (i = 0; i < MAX_LETTERS; i++)
         digit_of[i] = -1;
 
-    if (!solve_column(0, 0, digit_of, used, is_leading, &p))
+    if (!solve_column(0, 0, digit_of, 0u, is_leading, &p, columns))
         return 0;
 
     format_result(&p, digit_of, result, result_size);
