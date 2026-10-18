@@ -8,20 +8,36 @@
 #define MAX_WORD_LEN 16
 #define MAX_LETTERS 26
 
+typedef enum { OP_ADD, OP_SUB, OP_MUL, OP_DIV } Operator;
+
 typedef struct {
     char words[MAX_WORDS][MAX_WORD_LEN];
     int lengths[MAX_WORDS];
-    int n_addends;      /* количество слагаемых */
+    int n_addends;      /* количество операндов слева от "=" */
     int result_len;
+    Operator op;
 } Puzzle;
 
 /* ---------- разбор строки ребуса ---------- */
+
+static int op_char(char c, Operator *op)
+{
+    switch (c) {
+    case '+': *op = OP_ADD; return 1;
+    case '-': *op = OP_SUB; return 1;
+    case '*': *op = OP_MUL; return 1;
+    case '/': *op = OP_DIV; return 1;
+    default: return 0;
+    }
+}
 
 static int parse_puzzle(const char *puzzle, Puzzle *p)
 {
     int n_words = 0;
     int len = 0;
+    int op_seen = 0;
     const char *c;
+    Operator op = OP_ADD, this_op;
 
     memset(p, 0, sizeof(*p));
 
@@ -30,13 +46,21 @@ static int parse_puzzle(const char *puzzle, Puzzle *p)
             if (len >= MAX_WORD_LEN - 1 || n_words >= MAX_WORDS)
                 return 0;
             p->words[n_words][len++] = *c;
-        } else if (*c == '+' || *c == '=' || *c == '\0') {
+        } else if (op_char(*c, &this_op) || *c == '=' || *c == '\0') {
             if (len == 0)
                 return 0;
             p->words[n_words][len] = '\0';
             p->lengths[n_words] = len;
             n_words++;
             len = 0;
+
+            if (*c != '=' && *c != '\0') {
+                /* знак действия между операндами - все знаки должны совпадать */
+                if (op_seen && this_op != op)
+                    return 0; /* смешение разных действий в одном ребусе не поддерживается */
+                op = this_op;
+                op_seen = 1;
+            }
             if (*c == '\0')
                 break;
         } else if (isspace((unsigned char)*c)) {
@@ -46,13 +70,27 @@ static int parse_puzzle(const char *puzzle, Puzzle *p)
         }
     }
 
-    /* последнее слово - результат, остальные - слагаемые */
-    if (n_words < 3 || n_words > MAX_WORDS)
+    if (!op_seen || n_words < 3 || n_words > MAX_WORDS)
         return 0;
 
+    p->op = op;
     p->n_addends = n_words - 1;
     p->result_len = p->lengths[n_words - 1];
+
+    if (op != OP_ADD && p->n_addends != 2)
+        return 0; /* вычитание, умножение и деление - только бинарные операции */
+
     return 1;
+}
+
+static const char *op_symbol(Operator op)
+{
+    switch (op) {
+    case OP_SUB: return "-";
+    case OP_MUL: return "*";
+    case OP_DIV: return "/";
+    default:     return "+";
+    }
 }
 
 static void format_result(const Puzzle *p, const int digit_of[MAX_LETTERS],
@@ -66,7 +104,12 @@ static void format_result(const Puzzle *p, const int digit_of[MAX_LETTERS],
         for (j = 0; j < p->lengths[i]; j++)
             buf[pos++] = (char)('0' + digit_of[p->words[i][j] - 'A']);
         buf[pos++] = ' ';
-        buf[pos++] = (i == p->n_addends - 1) ? '=' : '+';
+        if (i == p->n_addends - 1) {
+            buf[pos++] = '=';
+        } else {
+            const char *sym = op_symbol(p->op);
+            buf[pos++] = sym[0];
+        }
         buf[pos++] = ' ';
     }
     for (j = 0; j < p->result_len; j++)
@@ -222,6 +265,100 @@ static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], unsigned 
     return assign_column_letters(new_letters, n_new, 0, col, carry, digit_of, used, is_leading, p, columns);
 }
 
+/* ---------- вычитание, умножение, деление (доп. задание) ----------
+ *
+ * Для этих действий (всегда ровно два операнда) быстрый поразрядный
+ * алгоритм выше неприменим напрямую (умножение и деление "сдвигают"
+ * разряды друг относительно друга), поэтому используется более простой
+ * перебор: по различным буквам ребуса, с отсечением ведущих нулей
+ * (тот же приём, что и в оптимизации 1), а само равенство проверяется
+ * один раз - после того как всем буквам назначены цифры. Операндов здесь
+ * всего два, поэтому даже такой перебор работает достаточно быстро.
+ */
+
+static int collect_letters(const Puzzle *p, char letters[MAX_LETTERS])
+{
+    int seen[MAX_LETTERS];
+    int n = 0;
+    int i, j;
+
+    memset(seen, 0, sizeof(seen));
+
+    for (i = 0; i <= p->n_addends; i++) {
+        for (j = 0; j < p->lengths[i]; j++) {
+            int idx = p->words[i][j] - 'A';
+            if (!seen[idx]) {
+                seen[idx] = 1;
+                letters[n++] = (char)('A' + idx);
+            }
+        }
+    }
+    return n;
+}
+
+static long long word_value(const char *w, int len, const int digit_of[MAX_LETTERS])
+{
+    long long v = 0;
+    int i;
+    for (i = 0; i < len; i++)
+        v = v * 10 + digit_of[w[i] - 'A'];
+    return v;
+}
+
+static int check_binary_op(const Puzzle *p, const int digit_of[MAX_LETTERS])
+{
+    long long a = word_value(p->words[0], p->lengths[0], digit_of);
+    long long b = word_value(p->words[1], p->lengths[1], digit_of);
+    long long r = word_value(p->words[2], p->result_len, digit_of);
+
+    switch (p->op) {
+    case OP_SUB: return a - b == r;
+    case OP_MUL: return a * b == r;
+    case OP_DIV: return b != 0 && a == b * r;
+    default:     return 0; /* сложение сюда не попадает - см. solve_puzzle */
+    }
+}
+
+static int assign_letter_generic(int idx, const char letters[MAX_LETTERS], int n_letters,
+                                  int digit_of[MAX_LETTERS], unsigned used,
+                                  const int is_leading[MAX_LETTERS], const Puzzle *p)
+{
+    int d;
+    char letter;
+    unsigned bit;
+
+    if (idx == n_letters)
+        return check_binary_op(p, digit_of);
+
+    letter = letters[idx];
+    for (d = 0; d <= 9; d++) {
+        bit = 1u << d;
+        if (used & bit)
+            continue;
+        if (d == 0 && is_leading[letter - 'A'])
+            continue;
+
+        digit_of[letter - 'A'] = d;
+
+        if (assign_letter_generic(idx + 1, letters, n_letters, digit_of, used | bit, is_leading, p))
+            return 1;
+
+        digit_of[letter - 'A'] = -1;
+    }
+    return 0;
+}
+
+static int solve_binary_op(const Puzzle *p, int digit_of[MAX_LETTERS], const int is_leading[MAX_LETTERS])
+{
+    char letters[MAX_LETTERS];
+    int n_letters = collect_letters(p, letters);
+
+    if (n_letters > 10)
+        return 0;
+
+    return assign_letter_generic(0, letters, n_letters, digit_of, 0u, is_leading, p);
+}
+
 int solve_puzzle(const char *puzzle, char *result, size_t result_size)
 {
     Puzzle p;
@@ -233,17 +370,21 @@ int solve_puzzle(const char *puzzle, char *result, size_t result_size)
     if (!parse_puzzle(puzzle, &p))
         return 0;
 
-    if (p.result_len < p.lengths[0])
-        return 0; /* результат заведомо короче слагаемых - решения не существует */
-
     mark_leading(&p, is_leading);
-    build_columns(&p, columns);
 
     for (i = 0; i < MAX_LETTERS; i++)
         digit_of[i] = -1;
 
-    if (!solve_column(0, 0, digit_of, 0u, is_leading, &p, columns))
-        return 0;
+    if (p.op == OP_ADD) {
+        if (p.result_len < p.lengths[0])
+            return 0; /* результат заведомо короче слагаемых - решения не существует */
+        build_columns(&p, columns);
+        if (!solve_column(0, 0, digit_of, 0u, is_leading, &p, columns))
+            return 0;
+    } else {
+        if (!solve_binary_op(&p, digit_of, is_leading))
+            return 0;
+    }
 
     format_result(&p, digit_of, result, result_size);
     return 1;

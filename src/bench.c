@@ -16,6 +16,10 @@ static const Benchmark benchmarks[] = {
     { "BE + BE = MOO",                      1000 },
     { "BIG + CAT = LION",                   1000 },
     { "ELEVEN + NINE + FIVE + FIVE = THIRTY", 50 },
+    /* доп. задание: вычитание, умножение, деление */
+    { "AB - CD = BC",                       1000 },
+    { "AB * C = CD",                        1000 },
+    { "AB / B = CD",                        1000 },
 };
 
 #define N_BENCHMARKS (sizeof(benchmarks) / sizeof(benchmarks[0]))
