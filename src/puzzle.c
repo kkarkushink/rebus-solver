@@ -99,7 +99,18 @@ static int collect_letters(const Puzzle *p, char letters[MAX_LETTERS])
     return n;
 }
 
-/* ---------- базовый алгоритм: полный перебор перестановок цифр ---------- */
+/* ---------- буквы, которые не могут получить цифру 0 (первые буквы слов) ---------- */
+
+static void mark_leading(const Puzzle *p, int is_leading[MAX_LETTERS])
+{
+    int i;
+    memset(is_leading, 0, MAX_LETTERS * sizeof(int));
+    for (i = 0; i <= p->n_addends; i++)
+        if (p->lengths[i] > 1)
+            is_leading[p->words[i][0] - 'A'] = 1;
+}
+
+/* ---------- алгоритм: перебор перестановок с отсечением ведущих нулей ---------- */
 
 static long long word_value(const char *w, int len, const int digit_of[MAX_LETTERS])
 {
@@ -110,17 +121,12 @@ static long long word_value(const char *w, int len, const int digit_of[MAX_LETTE
     return v;
 }
 
-/* Проверка готового (полного) назначения цифр буквам:
- * арифметическое равенство и отсутствие ведущих нулей. */
+/* Ведущие нули уже отсечены на этапе присваивания (см. assign_letter),
+ * поэтому здесь остаётся проверить только само арифметическое равенство. */
 static int check_assignment(const Puzzle *p, const int digit_of[MAX_LETTERS])
 {
     long long sum = 0;
     int i;
-
-    for (i = 0; i <= p->n_addends; i++) {
-        if (digit_of[p->words[i][0] - 'A'] == 0 && p->lengths[i] > 1)
-            return 0;
-    }
 
     for (i = 0; i < p->n_addends; i++)
         sum += word_value(p->words[i], p->lengths[i], digit_of);
@@ -129,9 +135,11 @@ static int check_assignment(const Puzzle *p, const int digit_of[MAX_LETTERS])
 }
 
 static int assign_letter(int idx, const char letters[MAX_LETTERS], int n_letters,
-                          int digit_of[MAX_LETTERS], int used[10], const Puzzle *p)
+                          int digit_of[MAX_LETTERS], int used[10],
+                          const int is_leading[MAX_LETTERS], const Puzzle *p)
 {
     int d;
+    char letter = letters[idx];
 
     if (idx == n_letters)
         return check_assignment(p, digit_of);
@@ -139,14 +147,17 @@ static int assign_letter(int idx, const char letters[MAX_LETTERS], int n_letters
     for (d = 0; d <= 9; d++) {
         if (used[d])
             continue;
-        used[d] = 1;
-        digit_of[letters[idx] - 'A'] = d;
+        if (d == 0 && is_leading[letter - 'A'])
+            continue; /* ведущая буква не может быть нулём - отсекаем ветку сразу */
 
-        if (assign_letter(idx + 1, letters, n_letters, digit_of, used, p))
+        used[d] = 1;
+        digit_of[letter - 'A'] = d;
+
+        if (assign_letter(idx + 1, letters, n_letters, digit_of, used, is_leading, p))
             return 1;
 
         used[d] = 0;
-        digit_of[letters[idx] - 'A'] = -1;
+        digit_of[letter - 'A'] = -1;
     }
     return 0;
 }
@@ -157,6 +168,7 @@ int solve_puzzle(const char *puzzle, char *result, size_t result_size)
     char letters[MAX_LETTERS];
     int n_letters;
     int digit_of[MAX_LETTERS];
+    int is_leading[MAX_LETTERS];
     int used[10] = { 0 };
     int i;
 
@@ -167,10 +179,12 @@ int solve_puzzle(const char *puzzle, char *result, size_t result_size)
     if (n_letters > 10)
         return 0; /* больше 10 различных букв - решения не существует */
 
+    mark_leading(&p, is_leading);
+
     for (i = 0; i < MAX_LETTERS; i++)
         digit_of[i] = -1;
 
-    if (!assign_letter(0, letters, n_letters, digit_of, used, &p))
+    if (!assign_letter(0, letters, n_letters, digit_of, used, is_leading, &p))
         return 0;
 
     format_result(&p, digit_of, result, result_size);
