@@ -44,9 +44,12 @@ int main(void)
     expect_solution("AB - CD = BC", "41 - 29 = 12");
     expect_solution("AB * C = CD", "12 * 3 = 36");
     expect_solution("AB / B = CD", "32 / 2 = 16");
-    expect_solution("ABC - D - E = FG", "102 - 3 - 4 = 95");
-    expect_solution("A * B * C = DE", "1 * 3 * 8 = 24");
-    expect_solution("ABC / D / E = F", "108 / 2 / 6 = 9");
+    expect_solution("ABCD - A = ABCE", "1024 - 1 = 1023");
+    expect_solution("ABCD * E = EBFC", "1023 * 4 = 4092");
+    expect_solution("ABCD / E = EBAF", "4086 / 2 = 2043");
+    expect_rejected("A - B - C = D");
+    expect_rejected("A * B * C = D");
+    expect_rejected("A / B / C = D");
 
     expect_rejected("A + BB = C");
     expect_rejected("A + B + C");
