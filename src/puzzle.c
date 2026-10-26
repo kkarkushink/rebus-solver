@@ -1,10 +1,11 @@
 #include "puzzle.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 
-#define MAX_WORDS 8       /* до 7 слагаемых + 1 результат */
+#define MAX_WORDS 8       /* до 7 операндов + 1 результат */
 #define MAX_WORD_LEN 16
 #define MAX_LETTERS 26
 
@@ -92,9 +93,6 @@ static int parse_puzzle(const char *puzzle, Puzzle *p)
     p->op = op;
     p->n_addends = left_words;
     p->result_len = p->lengths[left_words];
-
-    if (op != OP_ADD && p->n_addends != 2)
-        return 0; /* вычитание, умножение и деление - только бинарные операции */
 
     return 1;
 }
@@ -263,7 +261,7 @@ static int solve_column(int col, int carry, int digit_of[MAX_LETTERS], unsigned 
 }
 
 /* Для вычитания, умножения и деления используем обычный перебор по буквам.
- * Эти операции поддерживаются только для двух операндов. */
+ * Арифметическое выражение проверяется целиком после назначения всех цифр. */
 
 static int collect_letters(const Puzzle *p, char letters[MAX_LETTERS])
 {
@@ -294,16 +292,39 @@ static long long word_value(const char *w, int len, const int digit_of[MAX_LETTE
     return v;
 }
 
-static int check_binary_op(const Puzzle *p, const int digit_of[MAX_LETTERS])
+static int check_generic_op(const Puzzle *p, const int digit_of[MAX_LETTERS])
 {
-    long long a = word_value(p->words[0], p->lengths[0], digit_of);
-    long long b = word_value(p->words[1], p->lengths[1], digit_of);
-    long long r = word_value(p->words[2], p->result_len, digit_of);
+    long long value = word_value(p->words[0], p->lengths[0], digit_of);
+    long long result = word_value(p->words[p->n_addends], p->result_len, digit_of);
+    int i;
 
     switch (p->op) {
-    case OP_SUB: return a - b == r;
-    case OP_MUL: return a * b == r;
-    case OP_DIV: return b != 0 && a == b * r;
+    case OP_SUB:
+        /* Цепочка вычитаний вычисляется слева направо. */
+        for (i = 1; i < p->n_addends; i++)
+            value -= word_value(p->words[i], p->lengths[i], digit_of);
+        return value == result;
+
+    case OP_MUL:
+        for (i = 1; i < p->n_addends; i++) {
+            long long factor = word_value(p->words[i], p->lengths[i], digit_of);
+            if (factor != 0 && value > LLONG_MAX / factor)
+                return 0; /* защита от переполнения long long */
+            value *= factor;
+        }
+        return value == result;
+
+    case OP_DIV:
+        /* Цепочка делений вычисляется слева направо. На каждом шаге
+         * допускается только точное целочисленное деление. */
+        for (i = 1; i < p->n_addends; i++) {
+            long long divisor = word_value(p->words[i], p->lengths[i], digit_of);
+            if (divisor == 0 || value % divisor != 0)
+                return 0;
+            value /= divisor;
+        }
+        return value == result;
+
     default:     return 0; /* сложение сюда не попадает - см. solve_puzzle */
     }
 }
@@ -317,7 +338,7 @@ static int assign_letter_generic(int idx, const char letters[MAX_LETTERS], int n
     unsigned bit;
 
     if (idx == n_letters)
-        return check_binary_op(p, digit_of);
+        return check_generic_op(p, digit_of);
 
     letter = letters[idx];
     for (d = 0; d <= 9; d++) {
@@ -337,7 +358,7 @@ static int assign_letter_generic(int idx, const char letters[MAX_LETTERS], int n
     return 0;
 }
 
-static int solve_binary_op(const Puzzle *p, int digit_of[MAX_LETTERS], const int is_leading[MAX_LETTERS])
+static int solve_generic_op(const Puzzle *p, int digit_of[MAX_LETTERS], const int is_leading[MAX_LETTERS])
 {
     char letters[MAX_LETTERS];
     int n_letters = collect_letters(p, letters);
@@ -377,7 +398,7 @@ int solve_puzzle(const char *puzzle, char *result, size_t result_size)
         if (!solve_column(0, 0, digit_of, 0u, is_leading, &p, columns))
             return 0;
     } else {
-        if (!solve_binary_op(&p, digit_of, is_leading))
+        if (!solve_generic_op(&p, digit_of, is_leading))
             return 0;
     }
 
