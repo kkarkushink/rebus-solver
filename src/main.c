@@ -1,12 +1,23 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "puzzle.h"
 
 int main(int argc, char **argv)
 {
     char puzzle[256];
     char result[256];
+    int exit_code;
+
+#ifdef _WIN32
+    /* Исходники и строки программы хранятся в UTF-8. */
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
 
     if (argc > 1) {
         /* Собираем все аргументы в одну строку ребуса. */
@@ -25,9 +36,19 @@ int main(int argc, char **argv)
 
     if (solve_puzzle(puzzle, result, sizeof(result))) {
         printf("%s\n", result);
-        return 0;
+        exit_code = 0;
+    } else {
+        printf("Решение не найдено.\n");
+        exit_code = 1;
     }
 
-    printf("Решение не найдено.\n");
-    return 1;
+    /* При запуске двойным щелчком даём прочитать результат. Если ребус
+     * передан аргументом командной строки, лишняя пауза не нужна. */
+    if (argc == 1) {
+        printf("\nНажмите Enter для выхода...");
+        fflush(stdout);
+        getchar();
+    }
+
+    return exit_code;
 }
