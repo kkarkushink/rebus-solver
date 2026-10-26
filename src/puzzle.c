@@ -36,6 +36,9 @@ static int parse_puzzle(const char *puzzle, Puzzle *p)
     int n_words = 0;
     int len = 0;
     int op_seen = 0;
+    int op_count = 0;
+    int equals_seen = 0;
+    int left_words = 0;
     const char *c;
     Operator op = OP_ADD, this_op;
 
@@ -55,11 +58,19 @@ static int parse_puzzle(const char *puzzle, Puzzle *p)
             len = 0;
 
             if (*c != '=' && *c != '\0') {
+                if (equals_seen)
+                    return 0; /* после знака равенства должен быть только результат */
                 /* знак действия между операндами - все знаки должны совпадать */
                 if (op_seen && this_op != op)
                     return 0; /* смешение разных действий в одном ребусе не поддерживается */
                 op = this_op;
                 op_seen = 1;
+                op_count++;
+            } else if (*c == '=') {
+                if (equals_seen)
+                    return 0; /* в выражении должен быть ровно один знак равенства */
+                equals_seen = 1;
+                left_words = n_words;
             }
             if (*c == '\0')
                 break;
@@ -70,12 +81,17 @@ static int parse_puzzle(const char *puzzle, Puzzle *p)
         }
     }
 
-    if (!op_seen || n_words < 3 || n_words > MAX_WORDS)
+    if (!op_seen || !equals_seen || n_words < 3 || n_words > MAX_WORDS)
+        return 0;
+
+    /* Слева должно быть от 2 до 7 операндов, справа - ровно одно слово. */
+    if (left_words < 2 || left_words > MAX_WORDS - 1 ||
+        n_words != left_words + 1 || op_count != left_words - 1)
         return 0;
 
     p->op = op;
-    p->n_addends = n_words - 1;
-    p->result_len = p->lengths[n_words - 1];
+    p->n_addends = left_words;
+    p->result_len = p->lengths[left_words];
 
     if (op != OP_ADD && p->n_addends != 2)
         return 0; /* вычитание, умножение и деление - только бинарные операции */
@@ -365,7 +381,10 @@ int solve_puzzle(const char *puzzle, char *result, size_t result_size)
     ColumnLayout columns[MAX_WORD_LEN];
     int digit_of[MAX_LETTERS];
     int is_leading[MAX_LETTERS];
-    int i;
+    int i, max_addend_len = 0;
+
+    if (!puzzle || !result || result_size == 0)
+        return 0;
 
     if (!parse_puzzle(puzzle, &p))
         return 0;
@@ -376,7 +395,10 @@ int solve_puzzle(const char *puzzle, char *result, size_t result_size)
         digit_of[i] = -1;
 
     if (p.op == OP_ADD) {
-        if (p.result_len < p.lengths[0])
+        for (i = 0; i < p.n_addends; i++)
+            if (p.lengths[i] > max_addend_len)
+                max_addend_len = p.lengths[i];
+        if (p.result_len < max_addend_len)
             return 0; /* результат заведомо короче слагаемых - решения не существует */
         build_columns(&p, columns);
         if (!solve_column(0, 0, digit_of, 0u, is_leading, &p, columns))
